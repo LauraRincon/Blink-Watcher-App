@@ -19,5 +19,5 @@
         android:layout_centerHorizontal="true"
         android:layout_marginBottom="16dp"
         android:layout_marginTop="16dp"
-        android:text="Take a picture" />
+        android:text="Start driving" />
 </RelativeLayout>
