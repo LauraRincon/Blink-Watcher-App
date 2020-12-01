@@ -1,353 +1,234 @@
 package com.blinkwatcher;
 
-import androidx.annotation.NonNull;
-import androidx.appcompat.app.AppCompatActivity;
-import androidx.core.app.ActivityCompat;
-
-import android.Manifest;
 import android.content.Context;
-import android.content.pm.PackageManager;
-import android.graphics.ImageFormat;
-import android.hardware.camera2.CameraAccessException;
-import android.hardware.camera2.CameraCaptureSession;
-import android.hardware.camera2.CameraCharacteristics;
-import android.hardware.camera2.CameraDevice;
-import android.hardware.camera2.CameraManager;
-import android.hardware.camera2.CameraMetadata;
-import android.hardware.camera2.CaptureRequest;
-import android.hardware.camera2.TotalCaptureResult;
-import android.hardware.camera2.params.StreamConfigurationMap;
-import android.media.Image;
-import android.media.ImageReader;
-import android.media.MediaRecorder;
+import android.content.res.AssetManager;
 import android.os.Bundle;
-import android.os.Environment;
-import android.os.Handler;
-import android.os.HandlerThread;
 import android.util.Log;
-import android.util.Size;
-import android.util.SparseIntArray;
-import android.graphics.SurfaceTexture;
-import android.view.Surface;
 import android.view.SurfaceView;
-import android.view.TextureView;
 import android.view.View;
 import android.widget.Button;
-import android.widget.FrameLayout;
-import android.widget.Toast;
 
+import androidx.appcompat.app.AppCompatActivity;
+
+import org.opencv.android.BaseLoaderCallback;
+import org.opencv.android.CameraBridgeViewBase;
+import org.opencv.android.JavaCameraView;
+import org.opencv.android.OpenCVLoader;
+import org.opencv.core.CvType;
+import org.opencv.core.Mat;
+import org.opencv.core.Point;
+import org.opencv.core.Scalar;
+import org.opencv.core.Size;
+import org.opencv.dnn.Dnn;
+import org.opencv.dnn.Net;
+import org.opencv.imgproc.Imgproc;
+import org.opencv.objdetect.CascadeClassifier;
+
+import java.io.BufferedInputStream;
 import java.io.File;
-import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.io.OutputStream;
-import java.nio.ByteBuffer;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
+import java.io.InputStream;
 
-public class MainActivity extends AppCompatActivity {
-    private static final String TAG = "AndroidCameraApi";
-    private Button takePictureButton;
-    private TextureView textureView;
-    private static final SparseIntArray ORIENTATIONS = new SparseIntArray();
+public class MainActivity extends AppCompatActivity implements CameraBridgeViewBase.CvCameraViewListener2 {
 
-    static {
-        ORIENTATIONS.append(Surface.ROTATION_0, 90);
-        ORIENTATIONS.append(Surface.ROTATION_90, 0);
-        ORIENTATIONS.append(Surface.ROTATION_180, 270);
-        ORIENTATIONS.append(Surface.ROTATION_270, 180);
+    CameraBridgeViewBase mOpenCvCameraView;
+    BaseLoaderCallback mLoaderCallback;
+
+    public static final int        JAVA_DETECTOR       = 0;
+    private static final String    TAG                 = "<BLINK-Watcher>";
+    private int                    mDetectorType       = JAVA_DETECTOR;
+    private File                   mCascadeFile;
+    private File                   mCascadeFileEye;
+    private CascadeClassifier      mJavaDetector;
+    private CascadeClassifier      mJavaDetectorEye;
+    Button StartDrivingBtn;
+
+    boolean startDriving = false;
+
+    Net detector;
+
+    public void loadModel(View Button) {
+        StartDrivingBtn = (Button) findViewById(R.id.btn_StartDiving);
+        if (!startDriving) {
+            startDriving = true;
+            String protoPath = getPath("deploy.prototxt", this);
+            String caffeWeights = getPath("res10_300x300_ssd_iter_140000.caffemodel", this);
+            detector = Dnn.readNetFromCaffe(protoPath, caffeWeights);
+            StartDrivingBtn.setText("Stop driving");
+        }
+        else{
+            startDriving = false;
+            StartDrivingBtn.setText("Start driving");
+        }
     }
-
-    private String cameraId;
-    protected CameraDevice cameraDevice;
-    protected CameraCaptureSession cameraCaptureSessions;
-    protected CaptureRequest captureRequest;
-    protected CaptureRequest.Builder captureRequestBuilder;
-    private Size imageDimension;
-    private ImageReader imageReader;
-    private File file;
-    private static final int REQUEST_CAMERA_PERMISSION = 200;
-    private boolean mFlashSupported;
-    private Handler mBackgroundHandler;
-    private HandlerThread mBackgroundThread;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
-        textureView = (TextureView) findViewById(R.id.texture);
-        assert textureView != null;
-        textureView.setSurfaceTextureListener(textureListener);
-//        takePictureButton = (Button) findViewById(R.id.btn_takepicture);
-//        assert takePictureButton != null;
-//        takePictureButton.setOnClickListener(new View.OnClickListener() {
-//            @Override
-//            public void onClick(View v) {
-//                takePicture();
-//            }
-//        });
-    }
 
-    TextureView.SurfaceTextureListener textureListener = new TextureView.SurfaceTextureListener() {
-        @Override
-        public void onSurfaceTextureAvailable(SurfaceTexture surface, int width, int height) {
-            //open your camera here
-            openCamera();
-        }
+        mOpenCvCameraView = (JavaCameraView) findViewById(R.id.CameraView);
+        mOpenCvCameraView.setVisibility(SurfaceView.VISIBLE);
+        mOpenCvCameraView.setCvCameraViewListener(this);
 
-        @Override
-        public void onSurfaceTextureSizeChanged(SurfaceTexture surface, int width, int height) {
-            // Transform you image captured size according to the surface width and height
-        }
+        mLoaderCallback = new BaseLoaderCallback(this){
+            @Override
+            public void onManagerConnected(int status){
+                super.onManagerConnected(status);
+                switch(status){
+                    case BaseLoaderCallback.SUCCESS:
+                        try {
+                            // load cascade file from application resources
+                            InputStream is = getResources().openRawResource(R.raw.lbpcascade_frontalface);
+                            File cascadeDir = getDir("cascade", Context.MODE_PRIVATE);
+                            mCascadeFile = new File(cascadeDir, "lbpcascade_frontalface.xml");
+                            FileOutputStream os = new FileOutputStream(mCascadeFile);
 
-        @Override
-        public boolean onSurfaceTextureDestroyed(SurfaceTexture surface) {
-            return false;
-        }
+                            byte[] buffer = new byte[4096];
+                            int bytesRead;
+                            while ((bytesRead = is.read(buffer)) != -1) {
+                                os.write(buffer, 0, bytesRead);
+                            }
+                            is.close();
+                            os.close();
 
-        @Override
-        public void onSurfaceTextureUpdated(SurfaceTexture surface) {
-        }
-    };
-    private final CameraDevice.StateCallback stateCallback = new CameraDevice.StateCallback() {
-        @Override
-        public void onOpened(CameraDevice camera) {
-            //This is called when the camera is open
-            Log.e(TAG, "onOpened");
-            cameraDevice = camera;
-            createCameraPreview();
-        }
+                            // load cascade file from application resources
+                            InputStream ise = getResources().openRawResource(R.raw.haarcascade_lefteye_2splits);
+                            File cascadeDirEye = getDir("cascade", Context.MODE_PRIVATE);
+                            mCascadeFileEye = new File(cascadeDirEye, "haarcascade_lefteye_2splits.xml");
+                            FileOutputStream ose = new FileOutputStream(mCascadeFileEye);
 
-        @Override
-        public void onDisconnected(CameraDevice camera) {
-            cameraDevice.close();
-        }
+                            while ((bytesRead = ise.read(buffer)) != -1) {
+                                ose.write(buffer, 0, bytesRead);
+                            }
+                            ise.close();
+                            ose.close();
 
-        @Override
-        public void onError(CameraDevice camera, int error) {
-            cameraDevice.close();
-            cameraDevice = null;
-        }
-    };
-    final CameraCaptureSession.CaptureCallback captureCallbackListener = new CameraCaptureSession.CaptureCallback() {
-        @Override
-        public void onCaptureCompleted(CameraCaptureSession session, CaptureRequest request, TotalCaptureResult result) {
-            super.onCaptureCompleted(session, request, result);
-            Toast.makeText(MainActivity.this, "Saved:" + file, Toast.LENGTH_SHORT).show();
-            createCameraPreview();
-        }
-    };
+                            mJavaDetector = new CascadeClassifier(mCascadeFile.getAbsolutePath());
+                            if (mJavaDetector.empty()) {
+                                Log.e(TAG, "Failed to load cascade classifier");
+                                mJavaDetector = null;
+                            } else
+                                Log.i(TAG, "Loaded cascade classifier from " + mCascadeFile.getAbsolutePath());
 
-    protected void startBackgroundThread() {
-        mBackgroundThread = new HandlerThread("Camera Background");
-        mBackgroundThread.start();
-        mBackgroundHandler = new Handler(mBackgroundThread.getLooper());
-    }
+                            mJavaDetectorEye = new CascadeClassifier(mCascadeFileEye.getAbsolutePath());
+                            if (mJavaDetectorEye.empty()) {
+                                Log.e(TAG, "Failed to load cascade classifier for eye");
+                                mJavaDetectorEye = null;
+                            } else
+                                Log.i(TAG, "Loaded cascade classifier from " + mCascadeFileEye.getAbsolutePath());
 
-    protected void stopBackgroundThread() {
-        mBackgroundThread.quitSafely();
-        try {
-            mBackgroundThread.join();
-            mBackgroundThread = null;
-            mBackgroundHandler = null;
-        } catch (InterruptedException e) {
-            e.printStackTrace();
-        }
-    }
+                            cascadeDir.delete();
+                            cascadeDirEye.delete();
 
-//    protected void takePicture() {
-////        if (null == cameraDevice) {
-////            Log.e(TAG, "cameraDevice is null");
-////            return;
-////        }
-////        CameraManager manager = (CameraManager) getSystemService(Context.CAMERA_SERVICE);
-////        try {
-////            CameraCharacteristics characteristics = manager.getCameraCharacteristics(cameraDevice.getId());
-////            Size[] jpegSizes = null;
-////            if (characteristics != null) {
-////                jpegSizes = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP).getOutputSizes(ImageFormat.JPEG);
-////            }
-////            int width = 640;
-////            int height = 480;
-////            if (jpegSizes != null && 0 < jpegSizes.length) {
-////                width = jpegSizes[0].getWidth();
-////                height = jpegSizes[0].getHeight();
-////            }
-////            ImageReader reader = ImageReader.newInstance(width, height, ImageFormat.JPEG, 1);
-////            List<Surface> outputSurfaces = new ArrayList<Surface>(2);
-////            outputSurfaces.add(reader.getSurface());
-////            outputSurfaces.add(new Surface(textureView.getSurfaceTexture()));
-////            final CaptureRequest.Builder captureBuilder = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
-////            captureBuilder.addTarget(reader.getSurface());
-////            captureBuilder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO);
-////            // Orientation
-////            int rotation = getWindowManager().getDefaultDisplay().getRotation();
-////            captureBuilder.set(CaptureRequest.JPEG_ORIENTATION, ORIENTATIONS.get(rotation));
-////            final File file = new File(Environment.getExternalStorageDirectory() + "/pic.jpg");
-////            ImageReader.OnImageAvailableListener readerListener = new ImageReader.OnImageAvailableListener() {
-////                @Override
-////                public void onImageAvailable(ImageReader reader) {
-////                    Image image = null;
-////                    try {
-////                        image = reader.acquireLatestImage();
-////                        ByteBuffer buffer = image.getPlanes()[0].getBuffer();
-////                        byte[] bytes = new byte[buffer.capacity()];
-////                        buffer.get(bytes);
-////                        save(bytes);
-////                    } catch (FileNotFoundException e) {
-////                        e.printStackTrace();
-////                    } catch (IOException e) {
-////                        e.printStackTrace();
-////                    } finally {
-////                        if (image != null) {
-////                            image.close();
-////                        }
-////                    }
-////                }
-////
-////                private void save(byte[] bytes) throws IOException {
-////                    OutputStream output = null;
-////                    try {
-////                        output = new FileOutputStream(file);
-////                        output.write(bytes);
-////                    } finally {
-////                        if (null != output) {
-////                            output.close();
-////                        }
-////                    }
-////                }
-////            };
-////            reader.setOnImageAvailableListener(readerListener, mBackgroundHandler);
-////            final CameraCaptureSession.CaptureCallback captureListener = new CameraCaptureSession.CaptureCallback() {
-////                @Override
-////                public void onCaptureCompleted(CameraCaptureSession session, CaptureRequest request, TotalCaptureResult result) {
-////                    super.onCaptureCompleted(session, request, result);
-////                    Toast.makeText(MainActivity.this, "Saved:" + file, Toast.LENGTH_SHORT).show();
-////                    createCameraPreview();
-////                }
-////            };
-////            cameraDevice.createCaptureSession(outputSurfaces, new CameraCaptureSession.StateCallback() {
-////                @Override
-////                public void onConfigured(CameraCaptureSession session) {
-////                    try {
-////                        session.capture(captureBuilder.build(), captureListener, mBackgroundHandler);
-////                    } catch (CameraAccessException e) {
-////                        e.printStackTrace();
-////                    }
-////                }
-////
-////                @Override
-////                public void onConfigureFailed(CameraCaptureSession session) {
-////                }
-////            }, mBackgroundHandler);
-////        } catch (CameraAccessException e) {
-////            e.printStackTrace();
-////        }
-////    }
-
-    protected void createCameraPreview() {
-        try {
-            SurfaceTexture texture = textureView.getSurfaceTexture();
-            assert texture != null;
-            texture.setDefaultBufferSize(imageDimension.getWidth(), imageDimension.getHeight());
-            Surface surface = new Surface(texture);
-            captureRequestBuilder = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
-            captureRequestBuilder.addTarget(surface);
-            cameraDevice.createCaptureSession(Arrays.asList(surface), new CameraCaptureSession.StateCallback() {
-                @Override
-                public void onConfigured(@NonNull CameraCaptureSession cameraCaptureSession) {
-                    //The camera is already closed
-                    if (null == cameraDevice) {
-                        return;
-                    }
-                    // When the session is ready, we start displaying the preview.
-                    cameraCaptureSessions = cameraCaptureSession;
-                    updatePreview();
+                        } catch (IOException e) {
+                            e.printStackTrace();
+                            Log.e(TAG, "Failed to load cascade. Exception thrown: " + e);
+                        }
+                        mOpenCvCameraView.enableFpsMeter();
+                        mOpenCvCameraView.enableView();
+                        break;
+                    default:
+                        super.onManagerConnected(status);
+                        break;
                 }
-
-                @Override
-                public void onConfigureFailed(@NonNull CameraCaptureSession cameraCaptureSession) {
-                    Toast.makeText(MainActivity.this, "Configuration change", Toast.LENGTH_SHORT).show();
-                }
-            }, null);
-        } catch (CameraAccessException e) {
-            e.printStackTrace();
-        }
-    }
-
-    private void openCamera() {
-        CameraManager manager = (CameraManager) getSystemService(Context.CAMERA_SERVICE);
-        Log.e(TAG, "is camera open");
-        try {
-            cameraId = manager.getCameraIdList()[1];
-            CameraCharacteristics characteristics = manager.getCameraCharacteristics(cameraId);
-            StreamConfigurationMap map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
-            assert map != null;
-            imageDimension = map.getOutputSizes(SurfaceTexture.class)[0];
-            // Add permission for camera and let user grant the permission
-            if (ActivityCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED && ActivityCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
-                ActivityCompat.requestPermissions(MainActivity.this, new String[]{Manifest.permission.CAMERA, Manifest.permission.WRITE_EXTERNAL_STORAGE}, REQUEST_CAMERA_PERMISSION);
-                return;
             }
-            manager.openCamera(cameraId, stateCallback, null);
-        } catch (CameraAccessException e) {
-            e.printStackTrace();
-        }
-        Log.e(TAG, "openCamera X");
-    }
+        };
 
-    protected void updatePreview() {
-        if (null == cameraDevice) {
-            Log.e(TAG, "updatePreview error, return");
-        }
-        captureRequestBuilder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO);
-        try {
-            cameraCaptureSessions.setRepeatingRequest(captureRequestBuilder.build(), null, mBackgroundHandler);
-        } catch (CameraAccessException e) {
-            e.printStackTrace();
-        }
-    }
-
-    private void closeCamera() {
-        if (null != cameraDevice) {
-            cameraDevice.close();
-            cameraDevice = null;
-        }
-        if (null != imageReader) {
-            imageReader.close();
-            imageReader = null;
-        }
     }
 
     @Override
-    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
-        if (requestCode == REQUEST_CAMERA_PERMISSION) {
-            if (grantResults[0] == PackageManager.PERMISSION_DENIED) {
-                // close the app
-                Toast.makeText(MainActivity.this, "Sorry!!!, you can't use this app without granting permission", Toast.LENGTH_LONG).show();
-                finish();
+    public Mat onCameraFrame(CameraBridgeViewBase.CvCameraViewFrame inputFrame) {
+        Mat mRgba = inputFrame.rgba();
+
+        if (startDriving) {
+            Imgproc.cvtColor(mRgba, mRgba, Imgproc.COLOR_RGBA2RGB);
+            Mat imageBlog = Dnn.blobFromImage(mRgba, 1.0, new Size(300, 300), new Scalar(104.0, 177.0, 123.0), true, false, CvType.CV_32F);
+
+            detector.setInput(imageBlog);
+            Mat detections = detector.forward();
+
+            int cols = mRgba.cols();
+            int rows = mRgba.rows();
+            double THRESHOLD = 0.80;
+
+            detections = detections.reshape(1, (int)detections.total() / 7);
+            for (int i = 0; i < detections.rows(); ++i) {
+
+                double confidence = detections.get(i, 2)[0];
+                if (confidence > THRESHOLD) {
+                    int left   = (int)(detections.get(i, 3)[0] * cols);
+                    int top    = (int)(detections.get(i, 4)[0] * rows);
+                    int right  = (int)(detections.get(i, 5)[0] * cols);
+                    int bottom = (int)(detections.get(i, 6)[0] * rows);
+                    Imgproc.rectangle(mRgba, new Point(left, top), new Point(right, bottom), new Scalar(255, 255, 0), 2);
+                    //Start detecting the eyes
+                }
             }
         }
+
+        return mRgba;
+    }
+
+    @Override
+    public void onCameraViewStarted(int width, int height) {
+
+    }
+
+    @Override
+    public void onCameraViewStopped() {
+
     }
 
     @Override
     protected void onResume() {
         super.onResume();
-        Log.e(TAG, "onResume");
-        startBackgroundThread();
-        if (textureView.isAvailable()) {
-            openCamera();
-        } else {
-            textureView.setSurfaceTextureListener(textureListener);
+        if (!OpenCVLoader.initDebug()){
+            OpenCVLoader.initAsync(OpenCVLoader.OPENCV_VERSION_3_0_0, this, mLoaderCallback);
+        }
+        else
+        {
+            mLoaderCallback.onManagerConnected(mLoaderCallback.SUCCESS);
         }
     }
 
     @Override
     protected void onPause() {
-        Log.e(TAG, "onPause");
-        //closeCamera();
-        stopBackgroundThread();
         super.onPause();
+        if(mOpenCvCameraView!=null){
+            mOpenCvCameraView.disableView();
+        }
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        if(mOpenCvCameraView!=null){
+            mOpenCvCameraView.disableView();
+        }
+    }
+
+    // Upload file to storage and return a path.
+    private static String getPath(String file, Context context) {
+        AssetManager assetManager = context.getAssets();
+        BufferedInputStream inputStream = null;
+        try {
+            // Read data from assets.
+            inputStream = new BufferedInputStream(assetManager.open(file));
+            byte[] data = new byte[inputStream.available()];
+            inputStream.read(data);
+            inputStream.close();
+            // Create copy file in storage.
+            File outFile = new File(context.getFilesDir(), file);
+            FileOutputStream os = new FileOutputStream(outFile);
+            os.write(data);
+            os.close();
+            // Return a path to file which may be read in common way.
+            return outFile.getAbsolutePath();
+        } catch (IOException ex) {
+            Log.i(TAG, "Failed to upload a file");
+        }
+        return "";
     }
 }
